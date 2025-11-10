@@ -27,7 +27,7 @@ jobs:
         run: |
           set -e
           mkdir -p build
-          wget https://raw.githubusercontent.com/Emon2358/fc-test/main/media/ruri_scene.mp4 -O build/ruri_scene.mp4
+          wget https://raw.githubusercontent.com/Emon2358/fc-test/main/media/RPReplay_Final1762760800.mov -O build/RPReplay_Final1762760800.mov
           
           mkdir -p build/frames
           # 15fps, 256x224 (NESの安全領域) にリサイズ
