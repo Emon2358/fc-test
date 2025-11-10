@@ -16,54 +16,39 @@ jobs:
       - name: 2. Setup Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg cc65 git build-essential cmake wget
+          # Pythonライブラリのインストーラ pip と、cc65, ffmpeg, wget をインストール
+          sudo apt-get install -y ffmpeg cc65 wget python3-pip
+          # Pythonスクリプトに必要なライブラリをインストール
+          pip3 install pillow numpy scipy
 
-      - name: 3. Download & Build Audio Converter (osoumen/dpcmc) - [修正]
-        # これが 'src' フォルダを使わない正しいビルド手順です
-        run: |
-          set -e
-          git clone https://github.com/osoumen/dpcmc.git dpcmc_build
-          # 'src' フォルダには移動せず、クローンしたルートで 'make' を実行
-          cd dpcmc_build && make
-          # 実行ファイル 'dpcmc' をパスに移動
-          sudo mv dpcmc /usr/local/bin/
+      # (旧 Step 3, 4 は削除)
 
-      - name: 4. Download & Build Video Converter (NesTiler)
-        run: |
-          set -e
-          git clone https://github.com/ClusterM/NesTiler.git NesTiler_build
-          cd NesTiler_build
-          mkdir build && cd build
-          cmake .. && make && sudo mv NesTiler /usr/local/bin/
-
-      - name: 5. Prepare Source Assets (URL Download)
+      - name: 3. Prepare Source Assets (URL Download)
         run: |
           set -e
           mkdir -p build
           wget https://raw.githubusercontent.com/Emon2358/fc-test/main/media/ruri_scene.mp4 -O build/ruri_scene.mp4
           
           mkdir -p build/frames
-          ffmpeg -i build/ruri_scene.mp4 -vf "fps=15,scale=256:240" build/frames/frame_%04d.png
-          ffmpeg -i build/ruri_scene.mp4 -ar 15734 -ac 1 build/audio.wav
+          # 15fps, 256x224 (NESの安全領域) にリサイズ
+          ffmpeg -i build/ruri_scene.mp4 -vf "fps=15,scale=256:224,crop=256:224" build/frames/frame_%04d.png
+          # DPCM用に 15734Hz モノラル 16bit PCM でWAVを抽出
+          ffmpeg -i build/ruri_scene.mp4 -ar 15734 -ac 1 -sample_fmt s16 build/audio.wav
           
           ls build/frames/*.png | wc -l > build/frame_count.txt
 
-      - name: 6. Convert Audio using dpcmc
+      - name: 4. Convert Audio using Python Script
         run: |
           set -e
-          # dpcmc を実行
-          dpcmc -v64 -sN build/audio.wav build/sound.dmc
+          python3 tools/wav2dmc.py build/audio.wav build/sound.dmc
 
-      - name: 7. Convert Video using NesTiler
+      - name: 5. Convert Video using Python Script
         run: |
           set -e
-          nestiler -i "build/frames/frame_#04d.png" \
-                   -p "build/video_chr.bin" \
-                   -m "build/video_map.bin" \
-                   --mode=video \
-                   --pack-patterns
+          # Pythonスクリプトで CHR (タイル) と MAP (差分データ) を生成
+          python3 tools/video_converter.py build/frames build/video_chr.bin build/video_map.bin
 
-      - name: 8. Assemble the ROM
+      - name: 6. Assemble the ROM
         run: |
           set -e
           FRAME_COUNT=$(cat build/frame_count.txt)
@@ -71,7 +56,7 @@ jobs:
           ca65 src/player.asm -D FRAME_COUNT=$FRAME_COUNT -o build/player.o
           ld65 -C src/mmc3.cfg -o build/RuriHoshino.nes build/player.o --lib nes.lib
 
-      - name: 9. Upload NES ROM Artifact
+      - name: 7. Upload NES ROM Artifact
         uses: actions/upload-artifact@v4
         with:
           name: nadesico-rom
