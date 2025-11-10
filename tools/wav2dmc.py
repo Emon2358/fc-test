@@ -10,8 +10,12 @@ class DmcEncoder:
         self.bits = 0
 
     def encode_sample(self, sample):
-        # サンプルを 0-127 の範囲に正規化 (WAVは -32768 to 32767)
-        target_level = (sample + 32768) >> 9
+        # ----------------------------------------------------
+        # [修正]
+        # sample (numpy.int16) を先に int() でPythonの int に変換し、
+        # OverflowError を防ぎます。
+        target_level = (int(sample) + 32768) >> 9
+        # ----------------------------------------------------
         
         bit_data = 0
         
