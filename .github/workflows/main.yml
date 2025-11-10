@@ -11,37 +11,44 @@ jobs:
 
     steps:
       - name: 1. Checkout repository
+        # アセンブリコード (src/*) を読み込むために必要
         uses: actions/checkout@v4
 
       - name: 2. Setup Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg cc65 git build-essential cmake
+          # wget をインストールリストに追加
+          sudo apt-get install -y ffmpeg cc65 git build-essential cmake wget
 
-      - name: 3. Download & Build DPCM Converter (dpcmc) - [修正]
-        # /tmp ではなく、ワークスペース内に "dpcmc_build" という名前でクローンします
+      - name: 3. Download & Build DPCM Converter (dpcmc)
         run: |
           git clone https://github.com/osoumen/dpcmc.git dpcmc_build
-          make -C dpcmc_build/src
-          sudo mv dpcmc_build/bin/dpcmc /usr/local/bin/
+          cd dpcmc_build/src
+          make
+          sudo mv dpcmc /usr/local/bin/
 
       - name: 4. Download & Build Video Converter (NesTiler)
         run: |
-          git clone https://github.com/ClusterM/NesTiler.git /tmp/NesTiler
-          cd /tmp/NesTiler
+          git clone https://github.com/ClusterM/NesTiler.git NesTiler_build
+          cd NesTiler_build
           mkdir build && cd build
           cmake ..
           make
           sudo mv NesTiler /usr/local/bin/
 
-      - name: 5. Prepare Source Assets
+      - name: 5. Prepare Source Assets (URL Download) - [修正]
         run: |
+          mkdir -p build
+          # GitHubのURLからrawファイルをダウンロード
+          wget https://raw.githubusercontent.com/Emon2358/fc-test/main/media/ruri_scene.mp4 -O build/ruri_scene.mp4
+          
           mkdir -p build/frames
-          # 元の動画ファイルを 256x240 (フルスクリーン), 15fpsでPNGに
-          ffmpeg -i ji-dong-zhan-jian-natesiko-hosinoruri-jin-du-haanatanoyi-fan-ninaritai-tatute-ytshorts.savetube.me.mp4 -vf "fps=15,scale=256:240" build/frames/frame_%04d.png
-          # 音声をDPCM用に抽出
-          ffmpeg -i ji-dong-zhan-jian-natesiko-hosinoruri-jin-du-haanatanoyi-fan-ninaritai-tatute-ytshorts.savetube.me.mp4 -ar 15734 -ac 1 build/audio.wav
-          # 処理するフレーム数をカウント (アセンブリでのループ用)
+          # ダウンロードした動画ファイルをPNGに変換
+          ffmpeg -i build/ruri_scene.mp4 -vf "fps=15,scale=256:240" build/frames/frame_%04d.png
+          # ダウンロードした動画ファイルから音声を抽出
+          ffmpeg -i build/ruri_scene.mp4 -ar 15734 -ac 1 build/audio.wav
+          
+          # 処理するフレーム数をカウント
           ls build/frames/*.png | wc -l > build/frame_count.txt
 
       - name: 6. Convert Audio using dpcmc
