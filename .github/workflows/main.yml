@@ -1,0 +1,68 @@
+name: Build NES ROM
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive' # サブモジュールも取得
+
+      - name: 2. Setup Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg cc65 git build-essential python3-pip
+          pip3 install pillow numpy # pinobatchの依存関係
+
+      - name: 3. Download & Build DPCM Converter (dpcmc)
+        run: |
+          git clone https://github.com/osoumen/dpcmc.git /tmp/dpcmc
+          make -C /tmp/dpcmc/src
+          sudo mv /tmp/dpcmc/bin/dpcmc /usr/local/bin/
+
+      - name: 4. Download Video Converter (pinobatch)
+        # pinobatchは多くのフォークがありますが、nes-samplesのリポジトリにあるものが一般的です
+        run: |
+          git clone https://github.com/blargg/nes-samples.git /tmp/nes-samples
+          sudo ln -s /tmp/nes-samples/pinobatch/pinobatch_test.py /usr/local/bin/pinobatch
+
+      - name: 5. Prepare Source Assets
+        run: |
+          mkdir -p build/frames
+          # 256x224 (ファミコンの安全表示領域)にリサイズ, 15fps
+          ffmpeg -i media/ruri_scene.mp4 -vf "fps=15,scale=256:224,crop=256:224" build/frames/frame_%04d.png
+          # 15734Hz (DPCMレート) モノラル WAV
+          ffmpeg -i media/ruri_scene.mp4 -ar 15734 -ac 1 build/audio.wav
+
+      - name: 6. Convert Audio using dpcmc
+        # -v64 で音量を64に設定, -sN でNTSCレート
+        run: dpcmc -v64 -sN build/audio.wav build/sound.dmc
+
+      - name: 7. Convert Video using pinobatch
+        # pinobatchを実行し、アセンブリ(.s)とCHR(.bin)を生成
+        # --ppu-upload=vram-dma: VRAMへのDMA転送を前提とした差分データを生成
+        run: |
+          pinobatch --format=asm --ppu-upload=vram-dma build/frames/*.png
+          # 生成されたファイルをビルドディレクトリに移動
+          mv frames.s build/video_data.s
+          mv frames.chr build/video_chr.bin
+          
+      - name: 8. Assemble the ROM
+        # cc65アセンブラで、プレーヤーコードと生成されたデータを結合
+        run: |
+          ca65 src/player.asm -o build/player.o
+          ca65 build/video_data.s -o build/video_data.o
+          ld65 -C src/mmc3.cfg -o build/RuriHoshino.nes build/player.o build/video_data.o --lib nes.lib
+
+      - name: 9. Upload NES ROM Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nadesico-rom
+          path: build/RuriHoshino.nes
