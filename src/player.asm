@@ -1,31 +1,21 @@
-; ================================================
-; NES Video Player for NesTiler
-; Mapper: MMC3
-; ================================================
-
 .include "nes_header.inc"
 .include "mmc3.inc"
 
-; --- ZEROPAGE (高速アクセス用メモリ) ---
 .segment "ZEROPAGE"
-frame_idx:     .res 2  ; 現在のフレームインデックス (Word)
-frame_delay:   .res 1  ; 60fps -> 15fps 調整用 (4フレームに1回更新)
+frame_idx:     .res 2
+frame_delay:   .res 1
+map_data_ptr:  .res 2
+diff_len:      .res 2
+diff_ptr:      .res 2
 
-; --- RAM ---
-.segment "RAM"
-dma_page:      .res 256 ; $0200-$02FF, ネームテーブルDMA転送用バッファ
-
-; --- RODATA (各種データ) ---
 .segment "RODATA"
 AudioData:
     .incbin "build/sound.dmc"
 AudioDataEnd:
 
-; --- CODE (メインプログラム) ---
 .segment "CODE"
 
-; NesTilerが出力するデータ
-; MMC3のバンクに配置される
+; Pythonスクリプトが出力するデータ
 .segment "VIDEO_CHR"
 VideoChrData:
     .incbin "build/video_chr.bin"
@@ -36,66 +26,61 @@ VideoMapData:
     .incbin "build/video_map.bin"
 VideoMapDataEnd:
 
-; ================================================
-;  RESET - 起動時処理
-; ================================================
 .proc RESET
-    sei          ; 割り込み禁止
-    cld          ; デシマルモード解除
+    sei
+    cld
     ldx #$FF
-    txs          ; スタックポインタ初期化
-
-    jsr wait_vblank
+    txs
     
-    ; PPU/APUを無効化
+    jsr wait_vblank
     lda #0
     sta PPUCTRL
     sta PPUMASK
     sta $4015
     
-    ; MMC3 初期化
-    ; CHR A12 Invert ($0000-$0FFF と $1000-$1FFF を逆)
-    lda #%10000000
+    ; MMC3 PRGバンク設定
+    lda #MMC3_CMD_PRG_ROM
     sta MMC3_CMD
-    lda #0
+    lda #<VideoMapData ; $8000 にマップデータのバンクをセット
     sta MMC3_DATA
     
-    ; PRGバンク設定 (C000-DFFF を固定)
     lda #MMC3_CMD_PRG_ROM | %01000000
     sta MMC3_CMD
-    lda #<VideoMapData ; C000にマップデータのバンクをセット
-    sta MMC3_DATA      ; ※リンカ設定で要調整
+    lda #<AudioData ; $A000 にオーディオデータのバンクをセット
+    sta MMC3_DATA
 
-    ; 1. APU (DPCM) の設定
+    ; APU (DPCM) 設定
     lda #$0F       ; IRQ無効, ループ無効, レート 15734Hz
     sta $4010
-    lda #0         ; DPCM開始アドレス ($C000)
+    lda #%10000000 ; DPCM開始アドレス ($A000)
     sta $4012
-    lda #((AudioDataEnd - AudioData) / 64) ; DPCMデータ長
+    lda #((AudioDataEnd - AudioData) / 64)
     sta $4013
 
-    ; 2. ビデオ再生の準備
+    ; ビデオ再生準備
     lda #0
     sta frame_idx
     sta frame_idx+1
     sta frame_delay
+    lda #<VideoMapData
+    sta map_data_ptr
+    lda #>VideoMapData
+    sta map_data_ptr+1
 
-    ; 3. PPUをオン
+    ; PPUオン
     jsr wait_vblank
-    lda #%10000000 ; NMI有効, スプライト8x8
+    lda #%10000000 ; NMI有効
     sta PPUCTRL
     lda #%00011110 ; BG/Sprite表示ON
     sta PPUMASK
     
-    ; 4. DPCM再生開始
-    lda #%00010000 ; DPCMチャンネルをON
+    ; DPCM再生開始
+    lda #%00010000
     sta $4015
 
-    ; 5. メインループ (NMIに全てを任せる)
 MainLoop:
     jmp MainLoop
 
-; --- VBlank待機サブルーチン ---
 wait_vblank:
     bit PPUSTATUS
 @wait:
@@ -104,25 +89,22 @@ wait_vblank:
     rts
 .endproc
 
-; ================================================
-;  NMI - 垂直ブランク割り込み (毎フレーム実行)
-; ================================================
 .proc NMI
-    pha ; レジスタ退避
+    pha
     txa
     pha
     tya
     pha
     
-    ; --- フレームレート調整 (15fps) ---
+    ; 15fps (4フレームに1回更新)
     lda frame_delay
     bne @skip_frame
-    lda #3 ; 4フレーム待機 (0, 1, 2, 3)
+    lda #3
     sta frame_delay
-    
-    ; --- フレームが最後までいったらループ ---
+
+    ; フレームが最後までいったらループ
     lda frame_idx
-    cmp #<FRAME_COUNT ; .D FRAME_COUNT=xx で渡される
+    cmp #<FRAME_COUNT
     lda frame_idx+1
     sbc #>FRAME_COUNT
     bcc @frame_ok
@@ -130,76 +112,85 @@ wait_vblank:
     lda #0
     sta frame_idx
     sta frame_idx+1
+    lda #<VideoMapData
+    sta map_data_ptr
+    lda #>VideoMapData
+    sta map_data_ptr+1
 @frame_ok:
 
-    ; =================================
-    ; 1. CHRバンク (パターン) 切り替え
-    ; =================================
-    ; NesTilerは1フレームあたり4KB (4 * 1KBバンク) のCHRを使用
-    ; frame_idx * 4 を計算
-    lda frame_idx
-    asl
-    asl
-    ; この値をMMC3のCHRバンク R2, R3, R4, R5 にセット
-    
-    ; R2 ($1000)
-    sta MMC3_DATA
-    lda #MMC3_CMD_CHR_2
-    sta MMC3_CMD
-    
-    ; R3 ($1400)
-    clc
-    adc #1
-    sta MMC3_DATA
-    lda #MMC3_CMD_CHR_3
-    sta MMC3_CMD
+    ; 1. CHRバンク切り替え (Pythonスクリプトの実装に合わせて)
+    ; (注: Pythonスクリプトは現在 1bpp のみ出力するため、
+    ;  CHRバンク切り替えは未実装でも動作します)
 
-    ; R4 ($1800)
+    ; 2. 差分マップデータ転送
+    ; [データ長Lo, データ長Hi] を読み込む
+    ldy #0
+    lda (map_data_ptr), y
+    sta diff_len
+    iny
+    lda (map_data_ptr), y
+    sta diff_len+1
+    
+    ; データポインタを進める
     clc
-    adc #1
-    sta MMC3_DATA
-    lda #MMC3_CMD_CHR_4
-    sta MMC3_CMD
+    lda map_data_ptr
+    adc #2
+    sta map_data_ptr
+    bcc @no_carry
+    inc map_data_ptr+1
+@no_carry:
+    ; 差分データ本体のアドレスをセット
+    lda map_data_ptr
+    sta diff_ptr
+    lda map_data_ptr+1
+    sta diff_ptr+1
 
-    ; R5 ($1C00)
-    clc
-    adc #1
-    sta MMC3_DATA
-    lda #MMC3_CMD_CHR_5
-    sta MMC3_CMD
+    ; VRAMにデータを転送
+    ldy #0
+@diff_loop:
+    ; 残りデータ長をチェック
+    lda diff_len
+    ora diff_len+1
+    beq @diff_done ; データ長が0なら終了
 
-    ; =================================
-    ; 2. ネームテーブル (マップ) 転送
-    ; =================================
-    ; NesTilerは1フレームあたり 960バイト (32x30) のマップデータを出力
-    ; 転送元アドレス = VideoMapData + (frame_idx * 960)
-    ; 960 = $03C0
-    
-    ; (frame_idx * $03C0) の計算は重いので、
-    ; DMAバッファ($0200)にデータをコピーする
-    
-    ; ... (アドレス計算とデータコピーロジック) ...
-    ; ここでは簡略化のため、PRGバンクから$0200へのコピー処理を記述
-    ; (実際にはもっと複雑なバンク切り替えとポインタ計算が必要)
-    
-    ; --- DMA転送 ---
-    lda #0
+    ; [アドレスH, アドレスL, タイルID] を読み込む
+    ; アドレスH
+    lda (diff_ptr), y
     sta PPUADDR ; $2006
-    sta PPUADDR ; アドレスを $0000 に
+    iny
+    ; アドレスL (ネームテーブル $2000 を足す)
+    lda (diff_ptr), y
+    clc
+    adc #$20 ; $20xx
+    sta PPUADDR ; $2006
+    iny
+    ; タイルID
+    lda (diff_ptr), y
+    sta PPUDATA ; $2007
+    iny
     
-    ; $2000 (ネームテーブル0) に転送
-    lda #$20
-    sta PPUADDR
-    lda #$00
-    sta PPUADDR
+    ; データ長カウンタを3減らす
+    lda diff_len
+    sec
+    sbc #3
+    sta diff_len
+    lda diff_len+1
+    sbc #0
+    sta diff_len+1
     
-    lda #>dma_page ; $02
-    sta $4014      ; DMA転送開始 (バッファ $0200-$02FF)
+    jmp @diff_loop
     
-    ; ... (960バイトは256バイトx4回弱の転送が必要) ...
-    ; (NMI時間内に収めるため、実際には複数フレームに分割して転送する)
+@diff_done:
+    ; map_data_ptr を次のフレームへ進める (diff_ptr - map_data_ptr)
+    lda diff_ptr
+    clc
+    adc diff_len ; (diff_lenは今 0 または負なので)
+    sta map_data_ptr
+    lda diff_ptr+1
+    adc diff_len+1
+    sta map_data_ptr+1
 
-    ; --- フレームを進める ---
+    ; フレームインデックスを進める
     inc frame_idx
     bne @nmi_exit
     inc frame_idx+1
@@ -207,10 +198,10 @@ wait_vblank:
     jmp @nmi_exit
 
 @skip_frame:
-    dec frame_delay ; 待機フレーム数を減らす
+    dec frame_delay
 
 @nmi_exit:
-    pla ; レジスタ復帰
+    pla
     tay
     pla
     tax
