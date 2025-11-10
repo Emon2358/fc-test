@@ -7,7 +7,6 @@ on:
 
 jobs:
   build:
-    # 実行環境を Linux (Ubuntu) に戻します
     runs-on: ubuntu-latest
 
     steps:
@@ -17,18 +16,19 @@ jobs:
       - name: 2. Setup Toolchain
         run: |
           sudo apt-get update
-          # python3 と pip を追加
-          sudo apt-get install -y ffmpeg cc65 git build-essential cmake wget python3 python3-pip
+          sudo apt-get install -y ffmpeg cc65 git build-essential cmake wget
 
-      - name: 3. Download Audio Converter (pywav2dmc) - [修正]
-        # dpcmcの代わりに、Pythonスクリプトをダウンロードします (ビルド不要)
+      - name: 3. Download & Build Audio Converter (osoumen/dpcmc) - [修正]
+        # これが 'src' フォルダを使わない正しいビルド手順です
         run: |
           set -e
-          wget https://raw.githubusercontent.com/mstopa/pywav2dmc/master/pywav2dmc.py
-          chmod +x pywav2dmc.py
+          git clone https://github.com/osoumen/dpcmc.git dpcmc_build
+          # 'src' フォルダには移動せず、クローンしたルートで 'make' を実行
+          cd dpcmc_build && make
+          # 実行ファイル 'dpcmc' をパスに移動
+          sudo mv dpcmc /usr/local/bin/
 
       - name: 4. Download & Build Video Converter (NesTiler)
-        # こちらは Linux でビルドします
         run: |
           set -e
           git clone https://github.com/ClusterM/NesTiler.git NesTiler_build
@@ -48,11 +48,11 @@ jobs:
           
           ls build/frames/*.png | wc -l > build/frame_count.txt
 
-      - name: 6. Convert Audio using pywav2dmc - [修正]
+      - name: 6. Convert Audio using dpcmc
         run: |
           set -e
-          # ダウンロードしたPythonスクリプトでDPCMに変換します
-          python3 pywav2dmc.py build/audio.wav build/sound.dmc
+          # dpcmc を実行
+          dpcmc -v64 -sN build/audio.wav build/sound.dmc
 
       - name: 7. Convert Video using NesTiler
         run: |
@@ -69,7 +69,6 @@ jobs:
           FRAME_COUNT=$(cat build/frame_count.txt)
           echo "Total Frames: $FRAME_COUNT"
           ca65 src/player.asm -D FRAME_COUNT=$FRAME_COUNT -o build/player.o
-          # 出力ファイル名のタイポを修正 (RuriHsinones -> RuriHoshino.nes)
           ld65 -C src/mmc3.cfg -o build/RuriHoshino.nes build/player.o --lib nes.lib
 
       - name: 9. Upload NES ROM Artifact
