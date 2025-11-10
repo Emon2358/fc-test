@@ -12,54 +12,66 @@ jobs:
     steps:
       - name: 1. Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: 'recursive' # サブモジュールも取得
 
       - name: 2. Setup Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg cc65 git build-essential python3-pip
-          pip3 install pillow numpy # pinobatchの依存関係
+          sudo apt-get install -y ffmpeg cc65 git build-essential cmake
 
       - name: 3. Download & Build DPCM Converter (dpcmc)
+        # Linuxで動作するようソースからビルド
         run: |
           git clone https://github.com/osoumen/dpcmc.git /tmp/dpcmc
           make -C /tmp/dpcmc/src
           sudo mv /tmp/dpcmc/bin/dpcmc /usr/local/bin/
 
-      - name: 4. Download Video Converter (pinobatch)
-        # pinobatchは多くのフォークがありますが、nes-samplesのリポジトリにあるものが一般的です
+      - name: 4. Download & Build Video Converter (NesTiler)
+        # ClusterM/NesTiler をクローンしてビルドします
         run: |
-          git clone https://github.com/blargg/nes-samples.git /tmp/nes-samples
-          sudo ln -s /tmp/nes-samples/pinobatch/pinobatch_test.py /usr/local/bin/pinobatch
+          git clone https://github.com/ClusterM/NesTiler.git /tmp/NesTiler
+          cd /tmp/NesTiler
+          mkdir build && cd build
+          cmake ..
+          make
+          sudo mv NesTiler /usr/local/bin/
 
       - name: 5. Prepare Source Assets
         run: |
           mkdir -p build/frames
-          # 256x224 (ファミコンの安全表示領域)にリサイズ, 15fps
-          ffmpeg -i media/ruri_scene.mp4 -vf "fps=15,scale=256:224,crop=256:224" build/frames/frame_%04d.png
-          # 15734Hz (DPCMレート) モノラル WAV
-          ffmpeg -i media/ruri_scene.mp4 -ar 15734 -ac 1 build/audio.wav
+          # 元の動画ファイルを 256x240 (フルスクリーン), 15fpsでPNGに
+          ffmpeg -i ji-dong-zhan-jian-natesiko-hosinoruri-jin-du-haanatanoyi-fan-ninaritai-tatute-ytshorts.savetube.me.mp4 -vf "fps=15,scale=256:240" build/frames/frame_%04d.png
+          # 音声をDPCM用に抽出
+          ffmpeg -i ji-dong-zhan-jian-natesiko-hosinoruri-jin-du-haanatanoyi-fan-ninaritai-tatute-ytshorts.savetube.me.mp4 -ar 15734 -ac 1 build/audio.wav
+          # 処理するフレーム数をカウント (アセンブリでのループ用)
+          ls build/frames/*.png | wc -l > build/frame_count.txt
 
       - name: 6. Convert Audio using dpcmc
-        # -v64 で音量を64に設定, -sN でNTSCレート
         run: dpcmc -v64 -sN build/audio.wav build/sound.dmc
 
-      - name: 7. Convert Video using pinobatch
-        # pinobatchを実行し、アセンブリ(.s)とCHR(.bin)を生成
-        # --ppu-upload=vram-dma: VRAMへのDMA転送を前提とした差分データを生成
+      - name: 7. Convert Video using NesTiler
+        # NesTilerを実行
+        # -i ... : 入力ファイル (連番画像)
+        # -p ... : 出力CHR (パターンテーブル)
+        # -m ... : 出力NAM (ネームテーブル/タイルマップ)
+        # --mode=video : 動画モード (タイルセットを共通化)
+        # --pack-patterns : CHRデータをパックする
         run: |
-          pinobatch --format=asm --ppu-upload=vram-dma build/frames/*.png
-          # 生成されたファイルをビルドディレクトリに移動
-          mv frames.s build/video_data.s
-          mv frames.chr build/video_chr.bin
-          
+          nestiler -i "build/frames/frame_#04d.png" \
+                   -p "build/video_chr.bin" \
+                   -m "build/video_map.bin" \
+                   --mode=video \
+                   --pack-patterns
+
       - name: 8. Assemble the ROM
-        # cc65アセンブラで、プレーヤーコードと生成されたデータを結合
         run: |
-          ca65 src/player.asm -o build/player.o
-          ca65 build/video_data.s -o build/video_data.o
-          ld65 -C src/mmc3.cfg -o build/RuriHoshino.nes build/player.o build/video_data.o --lib nes.lib
+          # アセンブラにフレーム数を渡す
+          FRAME_COUNT=$(cat build/frame_count.txt)
+          echo "Total Frames: $FRAME_COUNT"
+          
+          # ca65アセンブラで、プレーヤーコードと生成されたデータを結合
+          # -D FRAME_COUNT=... でアセンブリコードに定数を渡す
+          ca65 src/player.asm -D FRAME_COUNT=$FRAME_COUNT -o build/player.o
+          ld65 -C src/mmc3.cfg -o build/RuriHoshino.nes build/player.o --lib nes.lib
 
       - name: 9. Upload NES ROM Artifact
         uses: actions/upload-artifact@v4
