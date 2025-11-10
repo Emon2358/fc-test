@@ -31,9 +31,9 @@ jobs:
           
           mkdir -p build/frames
           # 15fps, 256x224 (NESの安全領域) にリサイズ
-          ffmpeg -i build/ruri_scene.mp4 -vf "fps=15,scale=256:224,crop=256:224" build/frames/frame_%04d.png
+          ffmpeg -i build/RPReplay_Final1762760800.mov -vf "fps=15,scale=256:224,crop=256:224" build/frames/frame_%04d.png
           # DPCM用に 15734Hz モノラル 16bit PCM でWAVを抽出
-          ffmpeg -i build/ruri_scene.mp4 -ar 15734 -ac 1 -sample_fmt s16 build/audio.wav
+          ffmpeg -i build/RPReplay_Final1762760800.mov -ar 15734 -ac 1 -sample_fmt s16 build/audio.wav
           
           ls build/frames/*.png | wc -l > build/frame_count.txt
 
