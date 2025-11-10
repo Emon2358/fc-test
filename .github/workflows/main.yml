@@ -18,15 +18,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg cc65 git build-essential cmake
 
-      - name: 3. Download & Build DPCM Converter (dpcmc)
-        # Linuxで動作するようソースからビルド
+      - name: 3. Download & Build DPCM Converter (dpcmc) - [修正]
+        # /tmp ではなく、ワークスペース内に "dpcmc_build" という名前でクローンします
         run: |
-          git clone https://github.com/osoumen/dpcmc.git /tmp/dpcmc
-          make -C /tmp/dpcmc/src
-          sudo mv /tmp/dpcmc/bin/dpcmc /usr/local/bin/
+          git clone https://github.com/osoumen/dpcmc.git dpcmc_build
+          make -C dpcmc_build/src
+          sudo mv dpcmc_build/bin/dpcmc /usr/local/bin/
 
       - name: 4. Download & Build Video Converter (NesTiler)
-        # ClusterM/NesTiler をクローンしてビルドします
         run: |
           git clone https://github.com/ClusterM/NesTiler.git /tmp/NesTiler
           cd /tmp/NesTiler
@@ -49,12 +48,6 @@ jobs:
         run: dpcmc -v64 -sN build/audio.wav build/sound.dmc
 
       - name: 7. Convert Video using NesTiler
-        # NesTilerを実行
-        # -i ... : 入力ファイル (連番画像)
-        # -p ... : 出力CHR (パターンテーブル)
-        # -m ... : 出力NAM (ネームテーブル/タイルマップ)
-        # --mode=video : 動画モード (タイルセットを共通化)
-        # --pack-patterns : CHRデータをパックする
         run: |
           nestiler -i "build/frames/frame_#04d.png" \
                    -p "build/video_chr.bin" \
@@ -64,12 +57,8 @@ jobs:
 
       - name: 8. Assemble the ROM
         run: |
-          # アセンブラにフレーム数を渡す
           FRAME_COUNT=$(cat build/frame_count.txt)
           echo "Total Frames: $FRAME_COUNT"
-          
-          # ca65アセンブラで、プレーヤーコードと生成されたデータを結合
-          # -D FRAME_COUNT=... でアセンブリコードに定数を渡す
           ca65 src/player.asm -D FRAME_COUNT=$FRAME_COUNT -o build/player.o
           ld65 -C src/mmc3.cfg -o build/RuriHoshino.nes build/player.o --lib nes.lib
 
