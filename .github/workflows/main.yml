@@ -7,70 +7,78 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # 実行環境を Windows に変更
+    runs-on: windows-latest
 
     steps:
       - name: 1. Checkout repository
-        # アセンブリコード (src/*) を読み込むために必要
         uses: actions/checkout@v4
 
-      - name: 2. Setup Toolchain
+      - name: 2. Setup Toolchain (Chocolatey)
+        # Windowsのパッケージマネージャ 'Chocolatey' を使ってツールをインストール
         run: |
-          sudo apt-get update
-          # wget をインストールリストに追加
-          sudo apt-get install -y ffmpeg cc65 git build-essential cmake wget
+          choco install wget unzip git cmake ffmpeg cc65
+        shell: pwsh
 
-      - name: 3. Download & Build DPCM Converter (dpcmc)
+      - name: 3. Download DPCM Converter (dpcmc windows binary) - [修正]
+        # PowerShell を使ってご指定のzipをダウンロードし解凍
         run: |
-          git clone https://github.com/osoumen/dpcmc.git dpcmc_build
-          cd dpcmc_build/src
-          make
-          sudo mv dpcmc /usr/local/bin/
+          New-Item -ItemType Directory -Force -Path ".\tools"
+          wget https://github.com/osoumen/dpcmc/releases/download/release%2F180421/dpcmc180421-windows.zip -O dpcmc.zip
+          Expand-Archive -Path .\dpcmc.zip -DestinationPath ".\tools\dpcmc"
+          # 'dpcmc.exe' が '.\tools\dpcmc' に展開される
+          echo ".\tools\dpcmc" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        shell: pwsh
 
       - name: 4. Download & Build Video Converter (NesTiler)
+        # Windows環境で cmake を使って NesTiler をビルド
         run: |
           git clone https://github.com/ClusterM/NesTiler.git NesTiler_build
           cd NesTiler_build
-          mkdir build && cd build
+          mkdir build; cd build
           cmake ..
-          make
-          sudo mv NesTiler /usr/local/bin/
+          # Releaseモードでビルド
+          cmake --build . --config Release
+          # '.\NesTiler_build\build\Release\NesTiler.exe' ができる
+          echo ".\NesTiler_build\build\Release" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        shell: pwsh
 
-      - name: 5. Prepare Source Assets (URL Download) - [修正]
+      - name: 5. Prepare Source Assets (URL Download)
         run: |
-          mkdir -p build
-          # GitHubのURLからrawファイルをダウンロード
-          wget https://raw.githubusercontent.com/Emon2358/fc-test/main/media/ruri_scene.mp4 -O build/ruri_scene.mp4
+          New-Item -ItemType Directory -Force -Path ".\build\frames"
+          wget https://raw.githubusercontent.com/Emon2358/fc-test/main/media/ruri_scene.mp4 -O ".\build\ruri_scene.mp4"
           
-          mkdir -p build/frames
-          # ダウンロードした動画ファイルをPNGに変換
-          ffmpeg -i build/ruri_scene.mp4 -vf "fps=15,scale=256:240" build/frames/frame_%04d.png
-          # ダウンロードした動画ファイルから音声を抽出
-          ffmpeg -i build/ruri_scene.mp4 -ar 15734 -ac 1 build/audio.wav
+          # PowerShellのパス表記 '\' を使って ffmpeg を実行
+          ffmpeg -i ".\build\ruri_scene.mp4" -vf "fps=15,scale=256:240" ".\build\frames\frame_%04d.png"
+          ffmpeg -i ".\build\ruri_scene.mp4" -ar 15734 -ac 1 ".\build\audio.wav"
           
-          # 処理するフレーム数をカウント
-          ls build/frames/*.png | wc -l > build/frame_count.txt
+          # PowerShell でファイル数をカウント
+          $FrameCount = (Get-ChildItem -Path ".\build\frames" -Filter "*.png").Count
+          Set-Content -Path ".\build\frame_count.txt" -Value $FrameCount
+        shell: pwsh
 
       - name: 6. Convert Audio using dpcmc
-        run: dpcmc -v64 -sN build/audio.wav build/sound.dmc
+        run: |
+          dpcmc.exe -v64 -sN ".\build\audio.wav" ".\build\sound.dmc"
+        shell: pwsh
 
       - name: 7. Convert Video using NesTiler
         run: |
-          nestiler -i "build/frames/frame_#04d.png" \
-                   -p "build/video_chr.bin" \
-                   -m "build/video_map.bin" \
-                   --mode=video \
-                   --pack-patterns
+          NesTiler.exe -i ".\build\frames\frame_#04d.png" -p ".\build\video_chr.bin" -m ".\build\video_map.bin" --mode=video --pack-patterns
+        shell: pwsh
 
       - name: 8. Assemble the ROM
         run: |
-          FRAME_COUNT=$(cat build/frame_count.txt)
+          $FRAME_COUNT = Get-Content -Path ".\build\frame_count.txt"
           echo "Total Frames: $FRAME_COUNT"
-          ca65 src/player.asm -D FRAME_COUNT=$FRAME_COUNT -o build/player.o
-          ld65 -C src/mmc3.cfg -o build/RuriHoshino.nes build/player.o --lib nes.lib
+          # cc65 のWindows版実行ファイル (ca65.exe, ld65.exe) を実行
+          ca65.exe ".\src\player.asm" -D FRAME_COUNT=$FRAME_COUNT -o ".\build\player.o"
+          ld65.exe -C ".\src\mmc3.cfg" -o ".\build\RuriHoshino.nes" ".\build\player.o" --lib nes.lib
+        shell: pwsh
 
       - name: 9. Upload NES ROM Artifact
         uses: actions/upload-artifact@v4
         with:
           name: nadesico-rom
-          path: build/RuriHoshino.nes
+          # Windowsのパス表記を使用
+          path: .\build\RuriHoshino.nes
