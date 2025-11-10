@@ -1,6 +1,16 @@
 .include "nes_header.inc"
 .include "mmc3.inc"
 
+; ================================================
+; [修正] 不足していたPPUレジスタの定義を追加
+; ================================================
+PPUCTRL   = $2000
+PPUMASK   = $2001
+PPUSTATUS = $2002
+PPUADDR   = $2006
+PPUDATA   = $2007
+; ================================================
+
 .segment "ZEROPAGE"
 frame_idx:     .res 2
 frame_delay:   .res 1
@@ -34,8 +44,8 @@ VideoMapDataEnd:
     
     jsr wait_vblank
     lda #0
-    sta PPUCTRL
-    sta PPUMASK
+    sta PPUCTRL ; $2000
+    sta PPUMASK ; $2001
     sta $4015
     
     ; MMC3 PRGバンク設定
@@ -70,9 +80,9 @@ VideoMapDataEnd:
     ; PPUオン
     jsr wait_vblank
     lda #%10000000 ; NMI有効
-    sta PPUCTRL
+    sta PPUCTRL ; $2000
     lda #%00011110 ; BG/Sprite表示ON
-    sta PPUMASK
+    sta PPUMASK ; $2001
     
     ; DPCM再生開始
     lda #%00010000
@@ -82,9 +92,9 @@ MainLoop:
     jmp MainLoop
 
 wait_vblank:
-    bit PPUSTATUS
+    bit PPUSTATUS ; $2002
 @wait:
-    bit PPUSTATUS
+    bit PPUSTATUS ; $2002
     bpl @wait
     rts
 .endproc
