@@ -2,219 +2,215 @@
 .include "mmc3.inc"
 
 ; ================================================
-; [修正] 不足していたPPUレジスタの定義を追加
+; APU (サウンド) レジスタ定義
 ; ================================================
-PPUCTRL   = $2000
-PPUMASK   = $2001
-PPUSTATUS = $2002
-PPUADDR   = $2006
-PPUDATA   = $2007
+APU_PULSE1_CTRL = $4000
+APU_PULSE1_SWEEP = $4001
+APU_PULSE1_LO = $4002
+APU_PULSE1_HI = $4003
+
+APU_PULSE2_CTRL = $4004
+APU_PULSE2_SWEEP = $4005
+APU_PULSE2_LO = $4006
+APU_PULSE2_HI = $4007
+
+APU_TRI_CTRL = $4008
+APU_TRI_LO = $400A
+APU_TRI_HI = $400B
+
+APU_NOISE_CTRL = $400C
+APU_NOISE_LO = $400E
+APU_NOISE_HI = $400F
+
+APU_SND_CTRL = $4015
 ; ================================================
 
 .segment "ZEROPAGE"
-frame_idx:     .res 2
-frame_delay:   .res 1
-map_data_ptr:  .res 2
-diff_len:      .res 2
-diff_ptr:      .res 2
+music_ptr:     .res 2  ; 音楽データへのポインタ
+wait_timer:    .res 1  ; NMI待機用タイマー
 
 .segment "RODATA"
-AudioData:
-    .incbin "build/sound.dmc"
-AudioDataEnd:
+MusicData:
+    .incbin "build/music_data.bin"
+MusicDataEnd:
 
 .segment "CODE"
 
-; Pythonスクリプトが出力するデータ
-.segment "VIDEO_CHR"
-VideoChrData:
-    .incbin "build/video_chr.bin"
-VideoChrDataEnd:
-
-.segment "VIDEO_MAP"
-VideoMapData:
-    .incbin "build/video_map.bin"
-VideoMapDataEnd:
-
 .proc RESET
-    sei
+    sei          ; 割り込み禁止
     cld
     ldx #$FF
-    txs
-    
-    jsr wait_vblank
-    lda #0
-    sta PPUCTRL ; $2000
-    sta PPUMASK ; $2001
-    sta $4015
-    
-    ; MMC3 PRGバンク設定
-    lda #MMC3_CMD_PRG_ROM
-    sta MMC3_CMD
-    lda #<VideoMapData ; $8000 にマップデータのバンクをセット
-    sta MMC3_DATA
-    
-    lda #MMC3_CMD_PRG_ROM | %01000000
-    sta MMC3_CMD
-    lda #<AudioData ; $A000 にオーディオデータのバンクをセット
-    sta MMC3_DATA
+    txs          ; スタックポインタ初期化
 
-    ; APU (DPCM) 設定
-    lda #$0F       ; IRQ無効, ループ無効, レート 15734Hz
-    sta $4010
-    lda #%10000000 ; DPCM開始アドレス ($A000)
-    sta $4012
-    lda #((AudioDataEnd - AudioData) / 64)
-    sta $4013
-
-    ; ビデオ再生準備
-    lda #0
-    sta frame_idx
-    sta frame_idx+1
-    sta frame_delay
-    lda #<VideoMapData
-    sta map_data_ptr
-    lda #>VideoMapData
-    sta map_data_ptr+1
-
-    ; PPUオン
-    jsr wait_vblank
     lda #%10000000 ; NMI有効
-    sta PPUCTRL ; $2000
-    lda #%00011110 ; BG/Sprite表示ON
-    sta PPUMASK ; $2001
+    sta $2000      ; PPUCTRL
     
-    ; DPCM再生開始
-    lda #%00010000
-    sta $4015
-
+    ; APU (サウンド) 初期化
+    lda #0
+    sta APU_SND_CTRL ; 全チャンネルを無効化
+    
+    ; パルス波1 (Duty 50%, 音量 10)
+    lda #%01101010 
+    sta APU_PULSE1_CTRL
+    ; パルス波2 (Duty 50%, 音量 10)
+    lda #%01101010
+    sta APU_PULSE2_CTRL
+    ; 三角波 (音量ON)
+    lda #%10000000
+    sta APU_TRI_CTRL
+    ; ノイズ (音量 10)
+    lda #%00101010
+    sta APU_NOISE_CTRL
+    
+    ; 音楽データポインタとタイマーを初期化
+    lda #<MusicData
+    sta music_ptr
+    lda #>MusicData
+    sta music_ptr+1
+    lda #0
+    sta wait_timer
+    
+    ; APUチャンネルを有効化 (DPCM以外)
+    lda #%00001111
+    sta APU_SND_CTRL
+    
+    cli          ; 割り込み許可 (NMI開始)
+    
 MainLoop:
     jmp MainLoop
 
-wait_vblank:
-    bit PPUSTATUS ; $2002
-@wait:
-    bit PPUSTATUS ; $2002
-    bpl @wait
-    rts
 .endproc
 
+; ================================================
+;  NMI - 毎フレーム (60Hz) 実行
+; ================================================
 .proc NMI
     pha
-    txa
-    pha
-    tya
-    pha
     
-    ; 15fps (4フレームに1回更新)
-    lda frame_delay
-    bne @skip_frame
-    lda #3
-    sta frame_delay
-
-    ; フレームが最後までいったらループ
-    lda frame_idx
-    cmp #<FRAME_COUNT
-    lda frame_idx+1
-    sbc #>FRAME_COUNT
-    bcc @frame_ok
-    ; ループ
-    lda #0
-    sta frame_idx
-    sta frame_idx+1
-    lda #<VideoMapData
-    sta map_data_ptr
-    lda #>VideoMapData
-    sta map_data_ptr+1
-@frame_ok:
-
-    ; 1. CHRバンク切り替え (Pythonスクリプトの実装に合わせて)
-    ; (注: Pythonスクリプトは現在 1bpp のみ出力するため、
-    ;  CHRバンク切り替えは未実装でも動作します)
-
-    ; 2. 差分マップデータ転送
-    ; [データ長Lo, データ長Hi] を読み込む
-    ldy #0
-    lda (map_data_ptr), y
-    sta diff_len
-    iny
-    lda (map_data_ptr), y
-    sta diff_len+1
-    
-    ; データポインタを進める
-    clc
-    lda map_data_ptr
-    adc #2
-    sta map_data_ptr
-    bcc @no_carry
-    inc map_data_ptr+1
-@no_carry:
-    ; 差分データ本体のアドレスをセット
-    lda map_data_ptr
-    sta diff_ptr
-    lda map_data_ptr+1
-    sta diff_ptr+1
-
-    ; VRAMにデータを転送
-    ldy #0
-@diff_loop:
-    ; 残りデータ長をチェック
-    lda diff_len
-    ora diff_len+1
-    beq @diff_done ; データ長が0なら終了
-
-    ; [アドレスH, アドレスL, タイルID] を読み込む
-    ; アドレスH
-    lda (diff_ptr), y
-    sta PPUADDR ; $2006
-    iny
-    ; アドレスL (ネームテーブル $2000 を足す)
-    lda (diff_ptr), y
-    clc
-    adc #$20 ; $20xx
-    sta PPUADDR ; $2006
-    iny
-    ; タイルID
-    lda (diff_ptr), y
-    sta PPUDATA ; $2007
-    iny
-    
-    ; データ長カウンタを3減らす
-    lda diff_len
-    sec
-    sbc #3
-    sta diff_len
-    lda diff_len+1
-    sbc #0
-    sta diff_len+1
-    
-    jmp @diff_loop
-    
-@diff_done:
-    ; map_data_ptr を次のフレームへ進める (diff_ptr - map_data_ptr)
-    lda diff_ptr
-    clc
-    adc diff_len ; (diff_lenは今 0 または負なので)
-    sta map_data_ptr
-    lda diff_ptr+1
-    adc diff_len+1
-    sta map_data_ptr+1
-
-    ; フレームインデックスを進める
-    inc frame_idx
-    bne @nmi_exit
-    inc frame_idx+1
-    
+    lda wait_timer
+    beq @process_music
+    dec wait_timer
     jmp @nmi_exit
+    
+@process_music:
+    ldy #0
+    lda (music_ptr), y
+    
+    bmi @cmd_wait      ; $80-$FF (CMD_WAIT)
+    
+    and #%01000000
+    bne @cmd_note_off  ; $40-$7F (CMD_NOTE_OFF)
+    
+; $00-$3F (CMD_NOTE_ON)
+@cmd_note_on:
+    lda (music_ptr), y
+    and #%00000011 ; チャンネル番号 (0, 1, 2, 3)
+    tay ; Y = チャンネル番号
+    
+    ; データポインタをインクリメント (データ部へ)
+    inc music_ptr
+    bne @ptr_ok1
+    inc music_ptr+1
+@ptr_ok1:
+    
+    ; Y (チャンネル番号) でジャンプ
+    cpy #0
+    beq @note_on_pulse1
+    cpy #1
+    beq @note_on_pulse2
+    cpy #2
+    beq @note_on_triangle
+    
+@note_on_noise:
+    ; [Period] (1バイト)
+    ldy #0
+    lda (music_ptr), y ; Period
+    sta APU_NOISE_LO   ; ノイズ周期
+    lda #%00101010     ; 音量リセット (エンベロープ再開)
+    sta APU_NOISE_CTRL
+    lda #%10000000     ; 長さカウンタON
+    sta APU_NOISE_HI
+    jmp @cmd_done
 
-@skip_frame:
-    dec frame_delay
+@note_on_triangle:
+    ; [Lo, Hi] (2バイト)
+    ldy #0
+    lda (music_ptr), y ; Lo byte
+    sta APU_TRI_LO
+    iny
+    lda (music_ptr), y ; Hi byte
+    sta APU_TRI_HI
+    inc music_ptr ; ポインタを1バイト余分に進める
+    jmp @cmd_done
 
+@note_on_pulse1:
+    ; [Lo, Hi] (2バイト)
+    ldy #0
+    lda (music_ptr), y ; Lo byte
+    sta APU_PULSE1_LO
+    iny
+    lda (music_ptr), y ; Hi byte
+    sta APU_PULSE1_HI
+    lda #%10000000     ; 長さカウンタON
+    sta APU_PULSE1_HI, x ; (Hiに上書き)
+    inc music_ptr
+    jmp @cmd_done
+    
+@note_on_pulse2:
+    ; [Lo, Hi] (2バイト)
+    ldy #0
+    lda (music_ptr), y ; Lo byte
+    sta APU_PULSE2_LO
+    iny
+    lda (music_ptr), y ; Hi byte
+    sta APU_PULSE2_HI
+    lda #%10000000     ; 長さカウンタON
+    sta APU_PULSE2_HI, x
+    inc music_ptr
+    jmp @cmd_done
+
+@cmd_note_off:
+    lda (music_ptr), y
+    and #%00000011
+    
+    cmp #0
+    beq @note_off_pulse1
+    cmp #1
+    beq @note_off_pulse2
+    cmp #2
+    beq @note_off_triangle
+    
+@note_off_noise:
+    lda #0
+    sta APU_NOISE_CTRL ; 音量 0
+    jmp @cmd_done
+
+@note_off_triangle:
+    lda #0
+    sta APU_TRI_CTRL ; Linear counter 0
+    jmp @cmd_done
+
+@note_off_pulse1:
+    lda #%01100000 ; 音量 0
+    sta APU_PULSE1_CTRL
+    jmp @cmd_done
+    
+@note_off_pulse2:
+    lda #%01100000 ; 音量 0
+    sta APU_PULSE2_CTRL
+    jmp @cmd_done
+
+@cmd_wait:
+    lda (music_ptr), y
+    and #%01111111
+    sta wait_timer
+    
+@cmd_done:
+    inc music_ptr
+    bne @nmi_exit
+    inc music_ptr+1
+    
 @nmi_exit:
-    pla
-    tay
-    pla
-    tax
     pla
     rti
 .endproc
