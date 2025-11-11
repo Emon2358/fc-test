@@ -1,4 +1,4 @@
-name: Build NES ROM
+name: Build NES ROM (MIDI Player)
 
 on:
   push:
@@ -16,48 +16,35 @@ jobs:
       - name: 2. Setup Toolchain
         run: |
           sudo apt-get update
-          # Pythonライブラリのインストーラ pip と、cc65, ffmpeg, wget をインストール
-          sudo apt-get install -y ffmpeg cc65 wget python3-pip
-          # Pythonスクリプトに必要なライブラリをインストール
-          pip3 install pillow numpy scipy
+          # cc65 (アセンブラ) と Python (pip) をインストール
+          sudo apt-get install -y cc65 wget python3-pip
+          # PythonのMIDI解析ライブラリ 'mido' をインストール
+          pip3 install mido
 
-      # (旧 Step 3, 4 は削除)
-
-      - name: 3. Prepare Source Assets (URL Download)
+      - name: 3. Download Source MIDI
         run: |
           set -e
           mkdir -p build
-          wget https://raw.githubusercontent.com/Emon2358/fc-test/main/media/RPReplay_Final1762760800.mov -O build/RPReplay_Final1762760800.mov
-          
-          mkdir -p build/frames
-          # 15fps, 256x224 (NESの安全領域) にリサイズ
-          ffmpeg -i build/RPReplay_Final1762760800.mov -vf "fps=15,scale=256:224,crop=256:224" build/frames/frame_%04d.png
-          # DPCM用に 15734Hz モノラル 16bit PCM でWAVを抽出
-          ffmpeg -i build/RPReplay_Final1762760800.mov -ar 15734 -ac 1 -sample_fmt s16 build/audio.wav
-          
-          ls build/frames/*.png | wc -l > build/frame_count.txt
+          # MP4の代わりに、hert01.mid をダウンロード (リポジトリに置く場合は不要)
+          wget https://github.com/Emon2358/fc-test/raw/main/media/hert01.mid -O build/hert01.mid
+          # (もしhert01.midをリポジトリのルートに置く場合は、
+          #  cp hert01.mid build/hert01.mid に変更してください)
 
-      - name: 4. Convert Audio using Python Script
+      - name: 4. Convert MIDI to NES Data
         run: |
           set -e
-          python3 tools/wav2dmc.py build/audio.wav build/sound.dmc
+          # Pythonスクリプトで MIDI を NES用音楽データに変換
+          python3 tools/midi_converter.py build/hert01.mid build/music_data.bin
 
-      - name: 5. Convert Video using Python Script
+      - name: 5. Assemble the ROM
         run: |
           set -e
-          # Pythonスクリプトで CHR (タイル) と MAP (差分データ) を生成
-          python3 tools/video_converter.py build/frames build/video_chr.bin build/video_map.bin
+          # (FRAME_COUNT は不要になったため削除)
+          ca65 src/player.asm -o build/player.o
+          ld65 -C src/mmc3.cfg -o build/BGM_Player.nes build/player.o --lib nes.lib
 
-      - name: 6. Assemble the ROM
-        run: |
-          set -e
-          FRAME_COUNT=$(cat build/frame_count.txt)
-          echo "Total Frames: $FRAME_COUNT"
-          ca65 src/player.asm -D FRAME_COUNT=$FRAME_COUNT -o build/player.o
-          ld65 -C src/mmc3.cfg -o build/RuriHoshino.nes build/player.o --lib nes.lib
-
-      - name: 7. Upload NES ROM Artifact
+      - name: 6. Upload NES ROM Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nadesico-rom
-          path: build/RuriHoshino.nes
+          name: bgm-rom
+          path: build/BGM_Player.nes
